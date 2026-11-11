@@ -1,0 +1,60 @@
+
+# Dependencies
+node_modules/
+.pnp/
+.pnp.js
+
+# Build outputs
+.next/
+out/
+dist/
+build/
+coverage/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Cache
+.cache/
+.turbo/
+.eslintcache
+
+# Testing
+.nyc_output/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Next.js
+next-env.d.ts
+
+# Vite
+vite.config.*.timestamp-*
+
+# TypeScript
+*.tsbuildinfo
+
+# Local uploads and user data
+uploads/
