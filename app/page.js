@@ -16,6 +16,7 @@ import VideoStories from '@/components/VideoStories';
 import Cta from '@/components/Cta';
 import Footer from '@/components/Footer';
 import SheetStory from '@/components/SheetStory';
+import InstallStory from '@/components/InstallStory';
 
 export default function Home() {
   const [ready, setReady] = useState(false);
@@ -30,7 +31,8 @@ export default function Home() {
         <About />
         <Showreel />
         <Products />
-        <SheetStory/>
+        {/* <SheetStory/> */}
+        <InstallStory/>
         <Gallery />
         <Tests />
         <VideoStories />

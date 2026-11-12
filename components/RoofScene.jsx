@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import gsap from 'gsap';
+import { createSpin } from './spin360';
 
 /* ------------------------------------------------------------------ */
 /*  Sheet profiles — height (z) of the sheet at any (x, y) on its face */
@@ -41,6 +42,7 @@ const H = 3.2;
  *  profile    'tile' | 'trafford'
  *  weather    'rain' | 'sun' | 'none'
  *  progress   optional ref ({ current: { p: 0..1 } }) driven by ScrollTrigger
+ *  spin360    true = drag to rotate the sheet a full 360°
  *  className
  */
 export default function RoofScene({
@@ -50,6 +52,7 @@ export default function RoofScene({
   progress,
   distance = 9,
   offset = [0, 0],
+  spin360 = false,
   className = '',
 }) {
   const mountRef = useRef(null);
@@ -178,6 +181,10 @@ export default function RoofScene({
     };
     window.addEventListener('pointermove', onMove, { passive: true });
 
+    /* 360° drag-to-rotate */
+    const spin = createSpin(mount, { autoSpeed: reduce ? 0 : 0.35 });
+    spin.setEnabled(spin360);
+
     /* only render while visible */
     let visible = true;
     const io = new IntersectionObserver(([entry]) => (visible = entry.isIntersecting), {
@@ -197,10 +204,13 @@ export default function RoofScene({
 
       pointer.x += (pointer.tx - pointer.x) * 0.05;
       pointer.y += (pointer.ty - pointer.y) * 0.05;
+      spin.update(dt);
+      const parallax = 1 - spin.mix; // no mouse-follow while in 360° mode
 
       const float = reduce ? 0 : Math.sin(t * 0.6) * 0.04;
-      group.rotation.y = pointer.x * 0.18 + p * 0.7 + (reduce ? 0 : Math.sin(t * 0.25) * 0.05);
-      group.rotation.x = pointer.y * 0.08 - p * 0.25;
+      group.rotation.y =
+        pointer.x * 0.18 * parallax + p * 0.7 + (reduce ? 0 : Math.sin(t * 0.25) * 0.05) + spin.yaw;
+      group.rotation.x = pointer.y * 0.08 * parallax - p * 0.25 + spin.pitch;
       group.position.x = offset[0];
       group.position.y = offset[1] + float + p * 0.6;
       group.scale.setScalar(1 + p * 0.18);
@@ -221,13 +231,14 @@ export default function RoofScene({
     };
     tick();
 
-    api.current = { mat, morph, applyMorph, rainMat, sun, hemi };
+    api.current = { mat, morph, applyMorph, rainMat, sun, hemi, spin };
 
     return () => {
       cancelAnimationFrame(raf);
       timer.dispose();
       ro.disconnect();
       io.disconnect();
+      spin.dispose();
       window.removeEventListener('pointermove', onMove);
       gsap.killTweensOf([mat.color, morph, rainMat, sun.color, sun]);
       geo.dispose();
@@ -244,6 +255,10 @@ export default function RoofScene({
   }, []);
 
   /* ---------------- reactive props ---------------- */
+  useEffect(() => {
+    api.current?.spin.setEnabled(spin360);
+  }, [spin360]);
+
   useEffect(() => {
     const a = api.current;
     if (!a) return;

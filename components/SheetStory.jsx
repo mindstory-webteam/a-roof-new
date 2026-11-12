@@ -1,10 +1,13 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import gsap from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
+import { createSpin } from './spin360';
+import Spin360Button from './Spin360Button';
+import { STORY_ID, HANDOFF_MEDIA, HANDOFF_START } from './handoff';
 
 gsap.registerPlugin(ScrollTrigger);
 
@@ -18,6 +21,14 @@ gsap.registerPlugin(ScrollTrigger);
  *   5. Climates: Summer → Monsoon → Storm → Coast, each with its own
  *      background video and effects on the sheet itself.
  * The sheet slides left / right, always opposite the caption.
+ *
+ * Entry: the sheet falls in from the top edge, rippling, and settles.
+ * On desktop the Products sheet first sinks down and this section rises over
+ * it, then this sheet drops in from the top — one sheet falling through.
+ * Exit: once the climates are done, the sheet falls away downward.
+ *
+ * 360°: the button top-right turns on drag-to-rotate. It stacks on top of
+ * the scroll animation, so you can turn the sheet at any step.
  *
  * Videos: put loops in /public/video/ (see CLIMATES). If a file is
  * missing, the gradient sky behind it shows instead.
@@ -62,6 +73,7 @@ const UNDER_COLOUR = '#c9ced3';
 /* ── Scroll ────────────────────────────────────────────────────────── */
 const PIN_LENGTH = '+=700%';
 
+
 /* ── Sheet profiles: height of the sheet face at (x, y) ────────────── */
 const frac = (v) => ((v % 1) + 1) % 1;
 const tileZ = (x, y) => {
@@ -81,6 +93,17 @@ const traffordZ = (x) => {
   return (h + mini) * 0.12;
 };
 const profZ = (x, y, m) => tileZ(x, y) * (1 - m) + traffordZ(x) * m;
+
+/* ripple while the sheet is falling in or out: f = 1 is flat, 0 is full ripple */
+const smooth = (t) => t * t * (3 - 2 * t);
+const rippleZ = (x, y, f) => {
+  const e = 1 - smooth(f);
+  if (e <= 0) return 0;
+  const free = 0.35 + 0.65 * (0.5 - y / 2.6); // more movement toward the free (bottom) end
+  const wave = Math.sin(y * 2.1 - f * 8 + x * 0.35) * 0.42 * free;
+  const curl = Math.pow(Math.max(0, -y / 1.3), 3) * 0.9; // leading edge curls up
+  return e * (wave + curl);
+};
 
 const W = 4.2;
 const H = 2.6;
@@ -111,11 +134,19 @@ export default function SheetStory() {
   const mount = useRef(null);
   const labels = useRef([]);
   const chip = useRef(null);
+  const spinRef = useRef(null);
+  const [spin, setSpin] = useState(false);
+
+  useEffect(() => {
+    spinRef.current?.setEnabled(spin);
+  }, [spin]);
 
   useEffect(() => {
     const el = root.current;
     const host = mount.current;
     const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    // desktop: take over from the Products zoom instead of dropping in
+    const handoff = !reduce && window.matchMedia(HANDOFF_MEDIA).matches;
 
     /* ---------- renderer, scene, camera ---------- */
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -158,9 +189,11 @@ export default function SheetStory() {
     const n = base.attributes.position.count;
     const zTile = new Float32Array(n);
     const zTraf = new Float32Array(n);
+    const px = new Float32Array(n);
+    const py = new Float32Array(n);
     for (let i = 0; i < n; i++) {
-      const x = base.attributes.position.getX(i);
-      const y = base.attributes.position.getY(i);
+      const x = (px[i] = base.attributes.position.getX(i));
+      const y = (py[i] = base.attributes.position.getY(i));
       zTile[i] = tileZ(x, y);
       zTraf[i] = traffordZ(x);
     }
@@ -227,19 +260,24 @@ export default function SheetStory() {
     streams.frustumCulled = false;
     top.mesh.add(streams);
 
-    const applyProfile = (m) => {
+    // m = profile morph (0 tile → 1 trafford), r = ripple (1 = flat)
+    const zNow = new Float32Array(n);
+    const applyProfile = (m, r = 1) => {
+      for (let i = 0; i < n; i++) zNow[i] = zTile[i] * (1 - m) + zTraf[i] * m + rippleZ(px[i], py[i], r);
       for (const L of layers) {
         const pos = L.geo.attributes.position;
-        for (let i = 0; i < n; i++) pos.setZ(i, zTile[i] * (1 - m) + zTraf[i] * m);
+        for (let i = 0; i < n; i++) pos.setZ(i, zNow[i]);
         pos.needsUpdate = true;
         L.geo.computeVertexNormals();
       }
       for (let i = 0; i < BEADS; i++) {
-        beadPos[i * 3 + 2] = profZ(beadPos[i * 3], beadPos[i * 3 + 1], m) + 0.012;
+        const bx = beadPos[i * 3];
+        const by = beadPos[i * 3 + 1];
+        beadPos[i * 3 + 2] = profZ(bx, by, m) + rippleZ(bx, by, r) + 0.012;
       }
       beadGeo.attributes.position.needsUpdate = true;
     };
-    applyProfile(0);
+    applyProfile(0, reduce ? 1 : 0);
 
     /* ---------- rain ---------- */
     const DROPS = reduce ? 0 : 1600;
@@ -293,12 +331,19 @@ export default function SheetStory() {
       dolly: 0,
       weather: 0, // 0 = studio, 1 = climate scenes on
       climate: 0, // 0 summer … 3 coast
+      enter: reduce ? 1 : 0, // 0 = above the section, 1 = landed
+      exit: 0, // 0 = in place, 1 = fallen out below
     };
     if (reduce) Object.assign(state, { spin: 0.45, tilt: -0.5, scale: 1, explode: 1, x: -1 });
+
+    /* ---------- 360° drag-to-rotate ---------- */
+    const spin360 = createSpin(host, { autoSpeed: reduce ? 0 : 0.35 });
+    spinRef.current = spin360;
 
     const cA = new THREE.Color();
     const cB = new THREE.Color();
     let lastMorph = -1;
+    let lastRipple = -1;
     let lastColour = -1;
 
     /* ---------- sizing ---------- */
@@ -394,17 +439,23 @@ export default function SheetStory() {
       const wet = Math.max(monsoon, storm, coast * 0.35);
       const rainW = Math.max(monsoon, storm);
 
-      /* sheet transform */
-      sheet.rotation.y = state.spin + (reduce ? 0 : Math.sin(t * 0.4) * 0.03);
-      sheet.rotation.x = state.tilt;
+      /* sheet transform (scroll pose + 360° drag on top) */
+      spin360.update(dt);
+      const drop = 1 - smooth(state.enter); // still falling in
+      const fall = smooth(state.exit); // falling out
+      sheet.rotation.y = state.spin + drop * 0.6 + (reduce ? 0 : Math.sin(t * 0.4) * 0.03) + spin360.yaw;
+      sheet.rotation.x = state.tilt - drop * 0.9 + fall * 0.7 + spin360.pitch;
+      sheet.rotation.z = drop * 0.25 - fall * 0.2;
       sheet.position.x = state.x * xAmt * (1 - state.dolly * 0.2);
-      sheet.position.y = reduce ? 0 : Math.sin(t * 0.7) * 0.04;
+      sheet.position.y = drop * drop * 6 - fall * fall * 8 + (reduce ? 0 : Math.sin(t * 0.7) * 0.04);
       sheet.scale.setScalar(state.scale);
       layers.forEach((L) => (L.mesh.position.z = L.gap + L.spread * state.explode));
 
-      if (Math.abs(state.morph - lastMorph) > 0.002) {
-        applyProfile(state.morph);
+      const ripple = Math.min(state.enter, 1 - state.exit * 0.75);
+      if (Math.abs(state.morph - lastMorph) > 0.002 || Math.abs(ripple - lastRipple) > 0.001) {
+        applyProfile(state.morph, ripple);
         lastMorph = state.morph;
+        lastRipple = ripple;
       }
 
       if (state.colour !== lastColour) {
@@ -512,10 +563,29 @@ export default function SheetStory() {
 
     /* ---------- the scroll timeline ---------- */
     let tl;
+    const extras = [];
     if (reduce) {
       setStep(0.1);
     } else {
       setStep(0);
+      // entry: the sheet falls in from the top edge of the section. On desktop it
+      // starts a little later, once the section has covered the sinking product.
+      extras.push(
+        gsap.fromTo(
+          state,
+          { enter: 0 },
+          {
+            enter: 1,
+            ease: 'none',
+            scrollTrigger: {
+              trigger: el,
+              start: handoff ? HANDOFF_START : 'top bottom',
+              end: 'top top',
+              scrub: 0.8,
+            },
+          }
+        )
+      );
       tl = gsap.timeline({
         defaults: { ease: 'none' },
         scrollTrigger: {
@@ -558,15 +628,40 @@ export default function SheetStory() {
         if (i === 0) return;
         tl.to(state, { x: s.side === 'left' ? 1 : -1, duration: 0.06, ease: 'power2.inOut' }, s.at - 0.04);
       });
+
+      // exit: when the pin lets go, the sheet falls away downward as the section scrolls out
+      extras.push(
+        gsap.fromTo(
+          state,
+          { exit: 0 },
+          {
+            exit: 1,
+            ease: 'power1.in',
+            scrollTrigger: {
+              trigger: el,
+              start: () => tl.scrollTrigger.end,
+              end: () => tl.scrollTrigger.end + window.innerHeight * 0.8,
+              scrub: 0.8,
+            },
+          }
+        )
+      );
     }
 
     return () => {
       tl?.scrollTrigger?.kill();
       tl?.kill();
+      extras.forEach((tw) => {
+        tw.scrollTrigger?.kill();
+        tw.kill();
+      });
       cancelAnimationFrame(raf);
       ro.disconnect();
       io.disconnect();
       timer.dispose();
+      spin360.dispose();
+      spinRef.current = null;
+      host.style.opacity = '';
       videos.forEach((v) => v && v.pause());
       layers.forEach((L) => {
         L.geo.dispose();
@@ -583,7 +678,7 @@ export default function SheetStory() {
   const lastSide = STEPS[STEPS.length - 1].side;
 
   return (
-    <section ref={root} className="ss" aria-label="How the sheet is made">
+    <section id={STORY_ID} ref={root} className="ss" aria-label="How the sheet is made">
       {/* climate skies: gradient fallback + optional video loop */}
       <div className="ss-skies" aria-hidden="true">
         {CLIMATES.map((c) => (
@@ -645,6 +740,8 @@ export default function SheetStory() {
         </div>
       </div>
 
+      <Spin360Button on={spin} onToggle={() => setSpin((v) => !v)} />
+
       <ol className="ss-rail" aria-hidden="true">
         {STEPS.map((s) => (
           <li key={s.rail}>{s.rail}</li>
@@ -659,6 +756,7 @@ export default function SheetStory() {
         .ss {
           --ss-p: 0;
           position: relative;
+          z-index: 2; /* rises over the product sinking out of Products */
           height: 100svh;
           overflow: hidden;
           background: radial-gradient(110% 80% at 60% 40%, #ffffff 0%, var(--mist) 100%);
@@ -726,6 +824,14 @@ export default function SheetStory() {
           left: 0;
           right: 0;
           pointer-events: none;
+        }
+
+        /* 360° toggle */
+        .ss :global(.spin360) {
+          position: absolute;
+          top: clamp(96px, 14vh, 140px);
+          right: var(--gutter, 24px);
+          z-index: 3;
         }
 
         /* labels */
